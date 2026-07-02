@@ -7,6 +7,7 @@ import UnauthorizedPage from "@/pages/UnauthorizedPage";
 import StudentsPage from "@/pages/StudentsPage";
 import IDCardsPage from "@/pages/IDCardsPage";
 import ScannerPage from "@/pages/ScannerPage";
+import FeesPage from "@/pages/FeesPage";
 
 function App() {
   return (
@@ -15,6 +16,7 @@ function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/unauthorized" element={<UnauthorizedPage />} />
+
           <Route
             path="/"
             element={
@@ -44,6 +46,14 @@ function App() {
             element={
               <ProtectedRoute allowedRoles={["admin", "registrar"]}>
                 <ScannerPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/fees"
+            element={
+              <ProtectedRoute allowedRoles={["admin", "finance"]}>
+                <FeesPage />
               </ProtectedRoute>
             }
           />

@@ -48,7 +48,7 @@ export default function Sidebar({ isOpen, onClose }) {
         </div>
         <button
           onClick={onClose}
-          className="p-1 rounded-lg text-primary-300 hover:text-white hover:bg-primary-800 lg:hidden"
+          className="lg:hidden p-2 rounded-lg hover:bg-primary-800"
         >
           <X className="h-5 w-5" />
         </button>
