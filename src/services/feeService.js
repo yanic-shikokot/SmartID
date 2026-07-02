@@ -139,3 +139,27 @@ export async function getFeeSummary(year, term) {
 
   return { total, collected, pending, overdue, count, balance: total - collected };
 }
+
+export async function initiateMpesaPayment({ phoneNumber, amount, studentId, feeId, admissionNumber, term, year }) {
+  const response = await fetch('/.netlify/functions/mpesa-stk-push', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      phoneNumber,
+      amount,
+      studentId,
+      feeId,
+      admissionNumber,
+      term,
+      year,
+    }),
+  });
+
+  const data = await response.json();
+  
+  if (!response.ok) {
+    throw new Error(data.error || 'M-Pesa request failed');
+  }
+
+  return data;
+}

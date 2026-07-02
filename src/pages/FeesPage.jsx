@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { getStudents } from "@/services/studentService";
-import { getFees, getFeeSummary, recordPayment } from "@/services/feeService";
+import { getFees, getFeeSummary, recordPayment, initiateMpesaPayment } from "@/services/feeService";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,7 +17,6 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import {
   Select,
@@ -31,11 +30,11 @@ import {
   CreditCard,
   Search,
   DollarSign,
-  Users,
   TrendingUp,
   AlertCircle,
   CheckCircle,
   Clock,
+  Smartphone,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -52,11 +51,18 @@ export default function FeesPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedTerm, setSelectedTerm] = useState("Term 1");
   const [selectedYear, setSelectedYear] = useState("2026");
-  const [selectedStudent, setSelectedStudent] = useState("");
+
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentFee, setPaymentFee] = useState(null);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("cash");
+  const [paymentLoading, setPaymentLoading] = useState(false);
+
+  const [showMpesaModal, setShowMpesaModal] = useState(false);
+  const [mpesaFee, setMpesaFee] = useState(null);
+  const [mpesaPhone, setMpesaPhone] = useState("");
+  const [mpesaLoading, setMpesaLoading] = useState(false);
+  const [mpesaMessage, setMpesaMessage] = useState("");
 
   useEffect(() => {
     loadData();
@@ -93,6 +99,7 @@ export default function FeesPage() {
 
   const handleRecordPayment = async () => {
     if (!paymentFee || !paymentAmount) return;
+    setPaymentLoading(true);
     try {
       await recordPayment(paymentFee.id, paymentFee.studentId, {
         amount: parseFloat(paymentAmount),
@@ -107,6 +114,39 @@ export default function FeesPage() {
     } catch (err) {
       console.error("Payment error:", err);
       alert("Failed to record payment: " + err.message);
+    } finally {
+      setPaymentLoading(false);
+    }
+  };
+
+  const handleMpesaPayment = async () => {
+    if (!mpesaFee || !mpesaPhone) return;
+    setMpesaLoading(true);
+    setMpesaMessage("");
+    try {
+      const student = students.find((s) => s.id === mpesaFee.studentId);
+      const result = await initiateMpesaPayment({
+        phoneNumber: mpesaPhone,
+        amount: mpesaFee.balance || mpesaFee.amount,
+        studentId: mpesaFee.studentId,
+        feeId: mpesaFee.feeId || mpesaFee.id,
+        admissionNumber: student?.admissionNo || null,
+        term: mpesaFee.term,
+        year: mpesaFee.year,
+      });
+      setMpesaMessage(result.message || "STK push sent! Check your phone.");
+      setTimeout(() => {
+        setShowMpesaModal(false);
+        setMpesaPhone("");
+        setMpesaMessage("");
+        setMpesaFee(null);
+        loadData();
+      }, 3000);
+    } catch (err) {
+      console.error("M-Pesa error:", err);
+      setMpesaMessage("Error: " + err.message);
+    } finally {
+      setMpesaLoading(false);
     }
   };
 
@@ -132,6 +172,11 @@ export default function FeesPage() {
   const getStudentAdmission = (studentId) => {
     const student = students.find((s) => s.id === studentId);
     return student?.admissionNo || "-";
+  };
+
+  const getStudentPhone = (studentId) => {
+    const student = students.find((s) => s.id === studentId);
+    return student?.parentPhone || student?.phone || "";
   };
 
   return (
@@ -263,7 +308,7 @@ export default function FeesPage() {
                       <th className="text-right py-3 px-4 font-medium">Paid</th>
                       <th className="text-right py-3 px-4 font-medium">Balance</th>
                       <th className="text-center py-3 px-4 font-medium">Status</th>
-                      <th className="text-right py-3 px-4 font-medium">Action</th>
+                      <th className="text-right py-3 px-4 font-medium">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -296,19 +341,38 @@ export default function FeesPage() {
                             {getStatusBadge(fee.status)}
                           </td>
                           <td className="py-3 px-4 text-right">
-                            {fee.status !== "paid" && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => {
-                                  setPaymentFee(fee);
-                                  setShowPaymentModal(true);
-                                }}
-                              >
-                                <CreditCard className="h-3 w-3 mr-1" />
-                                Pay
-                              </Button>
-                            )}
+                            <div className="flex gap-2 justify-end">
+                              {fee.status !== "paid" && (
+                                <>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => {
+                                      setPaymentFee(fee);
+                                      setPaymentAmount(fee.balance?.toString() || "");
+                                      setShowPaymentModal(true);
+                                    }}
+                                  >
+                                    <CreditCard className="h-3 w-3 mr-1" />
+                                    Cash
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="default"
+                                    className="bg-green-600 hover:bg-green-700"
+                                    onClick={() => {
+                                      setMpesaFee(fee);
+                                      setMpesaPhone(getStudentPhone(fee.studentId));
+                                      setMpesaMessage("");
+                                      setShowMpesaModal(true);
+                                    }}
+                                  >
+                                    <Smartphone className="h-3 w-3 mr-1" />
+                                    M-Pesa
+                                  </Button>
+                                </>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))
@@ -321,10 +385,11 @@ export default function FeesPage() {
         </Card>
       </div>
 
+      {/* Cash Payment Modal */}
       <Dialog open={showPaymentModal} onOpenChange={setShowPaymentModal}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Record Payment</DialogTitle>
+            <DialogTitle>Record Cash Payment</DialogTitle>
           </DialogHeader>
           {paymentFee && (
             <div className="space-y-4">
@@ -352,7 +417,6 @@ export default function FeesPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="cash">Cash</SelectItem>
-                    <SelectItem value="mpesa">M-Pesa</SelectItem>
                     <SelectItem value="bank">Bank Transfer</SelectItem>
                   </SelectContent>
                 </Select>
@@ -364,9 +428,77 @@ export default function FeesPage() {
                 >
                   Cancel
                 </Button>
-                <Button onClick={handleRecordPayment} disabled={!paymentAmount}>
-                  <CheckCircle className="h-4 w-4 mr-1" />
-                  Record Payment
+                <Button onClick={handleRecordPayment} disabled={!paymentAmount || paymentLoading}>
+                  {paymentLoading ? "Recording..." : (
+                    <>
+                      <CheckCircle className="h-4 w-4 mr-1" />
+                      Record Payment
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* M-Pesa Payment Modal */}
+      <Dialog open={showMpesaModal} onOpenChange={setShowMpesaModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Pay with M-Pesa</DialogTitle>
+          </DialogHeader>
+          {mpesaFee && (
+            <div className="space-y-4">
+              <div className="bg-green-50 p-3 rounded-lg border border-green-200">
+                <p className="font-medium">{getStudentName(mpesaFee.studentId)}</p>
+                <p className="text-sm text-green-700">
+                  Amount: KES {(mpesaFee.balance || mpesaFee.amount || 0).toLocaleString()}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label>M-Pesa Phone Number</Label>
+                <Input
+                  type="tel"
+                  placeholder="2547XXXXXXXX"
+                  value={mpesaPhone}
+                  onChange={(e) => setMpesaPhone(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Format: 2547XXXXXXXX (e.g., 254712345678)
+                </p>
+              </div>
+              {mpesaMessage && (
+                <div className={cn(
+                  "p-3 rounded-lg text-sm",
+                  mpesaMessage.includes("Error") 
+                    ? "bg-red-50 text-red-700 border border-red-200"
+                    : "bg-green-50 text-green-700 border border-green-200"
+                )}>
+                  {mpesaMessage}
+                </div>
+              )}
+              <div className="flex gap-3 justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowMpesaModal(false);
+                    setMpesaMessage("");
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button 
+                  onClick={handleMpesaPayment} 
+                  disabled={!mpesaPhone || mpesaLoading}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  {mpesaLoading ? "Sending..." : (
+                    <>
+                      <Smartphone className="h-4 w-4 mr-1" />
+                      Send STK Push
+                    </>
+                  )}
                 </Button>
               </div>
             </div>
