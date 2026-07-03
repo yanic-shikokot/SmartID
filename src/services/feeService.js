@@ -16,23 +16,18 @@ const FEES_COLLECTION = "fees";
 const PAYMENTS_COLLECTION = "payments";
 
 export async function getFees({ studentId, term, year, status } = {}) {
-  let q = query(collection(db, FEES_COLLECTION), orderBy("createdAt", "desc"));
-
-  if (studentId) {
-    q = query(q, where("studentId", "==", studentId));
-  }
-  if (term) {
-    q = query(q, where("term", "==", term));
-  }
-  if (year) {
-    q = query(q, where("year", "==", year));
-  }
-  if (status) {
-    q = query(q, where("status", "==", status));
-  }
-
+  // Simple query without composite index issues
+  const q = query(collection(db, FEES_COLLECTION), orderBy("createdAt", "desc"));
   const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  let results = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+  // Filter in JavaScript instead of Firestore
+  if (studentId) results = results.filter((f) => f.studentId === studentId);
+  if (term) results = results.filter((f) => f.term === term);
+  if (year) results = results.filter((f) => f.year === year);
+  if (status) results = results.filter((f) => f.status === status);
+
+  return results;
 }
 
 export async function getStudentFees(studentId) {
@@ -109,12 +104,9 @@ export async function recordPayment(feeId, studentId, paymentData) {
 }
 
 export async function getFeeSummary(year, term) {
-  const q = query(
-    collection(db, FEES_COLLECTION),
-    where("year", "==", year),
-    where("term", "==", term)
-  );
+  const q = query(collection(db, FEES_COLLECTION), orderBy("createdAt", "desc"));
   const snap = await getDocs(q);
+  const fees = snap.docs.map((d) => d.data()).filter((f) => f.year === year && f.term === term);
 
   let total = 0;
   let collected = 0;
@@ -122,8 +114,7 @@ export async function getFeeSummary(year, term) {
   let overdue = 0;
   let count = 0;
 
-  snap.docs.forEach((d) => {
-    const data = d.data();
+  fees.forEach((data) => {
     total += data.amount || 0;
     collected += data.paidAmount || 0;
     count++;
