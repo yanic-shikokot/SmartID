@@ -1,0 +1,51 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && request.auth.token.role == 'admin';
+    }
+    
+    function isFinance() {
+      return isAuthenticated() && request.auth.token.role == 'finance';
+    }
+    
+    function isRegistrar() {
+      return isAuthenticated() && request.auth.token.role == 'registrar';
+    }
+
+    // Students collection
+    match /students/{studentId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isRegistrar();
+      
+      // Student fees subcollection
+      match /fees/{feeId} {
+        allow read: if isAuthenticated();
+        allow write: if isAdmin() || isFinance();
+      }
+    }
+    
+    // Top-level fees collection (for queries)
+    match /fees/{feeId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isFinance();
+    }
+    
+    // Payments collection
+    match /payments/{paymentId} {
+      allow read: if isAdmin() || isFinance();
+      allow write: if isAdmin() || isFinance();
+    }
+    
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAdmin();
+    }
+  }
+}
