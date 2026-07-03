@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/context/AuthContext";
 import ProtectedRoute from "@/components/layout/ProtectedRoute";
 import LoginPage from "@/pages/LoginPage";
@@ -16,47 +16,32 @@ function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/unauthorized" element={<UnauthorizedPage />} />
-
-          <Route
-            path="/"
-            element={
-              <ProtectedRoute allowedRoles={["admin", "registrar", "finance"]}>
-                <DashboardPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/students"
-            element={
-              <ProtectedRoute allowedRoles={["admin", "registrar"]}>
-                <StudentsPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/id-cards"
-            element={
-              <ProtectedRoute allowedRoles={["admin", "registrar"]}>
-                <IDCardsPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/scanner"
-            element={
-              <ProtectedRoute allowedRoles={["admin", "registrar"]}>
-                <ScannerPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/fees"
-            element={
-              <ProtectedRoute allowedRoles={["admin", "finance"]}>
-                <FeesPage />
-              </ProtectedRoute>
-            }
-          />
+          <Route path="/" element={
+            <ProtectedRoute allowedRoles={["admin", "registrar", "finance"]}>
+              <DashboardPage />
+            </ProtectedRoute>
+          } />
+          <Route path="/students" element={
+            <ProtectedRoute allowedRoles={["admin", "registrar"]}>
+              <StudentsPage />
+            </ProtectedRoute>
+          } />
+          <Route path="/id-cards" element={
+            <ProtectedRoute allowedRoles={["admin", "registrar"]}>
+              <IDCardsPage />
+            </ProtectedRoute>
+          } />
+          <Route path="/scanner" element={
+            <ProtectedRoute allowedRoles={["admin", "registrar"]}>
+              <ScannerPage />
+            </ProtectedRoute>
+          } />
+          <Route path="/fees" element={
+            <ProtectedRoute allowedRoles={["admin", "finance"]}>
+              <FeesPage />
+            </ProtectedRoute>
+          } />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>
