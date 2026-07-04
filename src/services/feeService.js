@@ -131,10 +131,18 @@ export async function getFeeSummary(year, term) {
   return { total, collected, pending, overdue, count, balance: total - collected };
 }
 
-export async function initiateMpesaPayment({ phoneNumber, amount, studentId, feeId, admissionNumber, term, year }) {
-  const response = await fetch('/.netlify/functions/mpesa-stk-push', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+export async function initiateMpesaPayment({
+  phoneNumber,
+  amount,
+  studentId,
+  feeId,
+  admissionNumber,
+  term,
+  year,
+}) {
+  const response = await fetch("/.netlify/functions/mpesa-stk-push", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       phoneNumber,
       amount,
@@ -146,10 +154,13 @@ export async function initiateMpesaPayment({ phoneNumber, amount, studentId, fee
     }),
   });
 
-  const data = await response.json();
-  
+  const text = await response.text();
+  console.log("Server response:", text);
+
+  const data = text ? JSON.parse(text) : {};
+
   if (!response.ok) {
-    throw new Error(data.error || 'M-Pesa request failed');
+    throw new Error(JSON.stringify(data));
   }
 
   return data;

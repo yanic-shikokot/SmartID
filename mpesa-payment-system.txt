@@ -1,0 +1,443 @@
+===== netlify/functions/mpesa-stk-push.js =====
+const { getAccessToken, generateTimestamp, generatePassword, formatPhoneNumber, BASE_URL } = require('./utils/daraja');
+const { db } = require('./utils/firebaseAdmin');
+
+exports.handler = async (event) => {
+  if (event.httpMethod !== 'POST') {
+    return { statusCode: 405, body: JSON.stringify({ error: 'Method not allowed' }) };
+  }
+
+  try {
+    const { studentId, admissionNumber, phoneNumber, amount, term, year } = JSON.parse(event.body);
+    if (!studentId || !phoneNumber || !amount || !term || !year) {
+      return { statusCode: 400, body: JSON.stringify({ error: 'Missing required fields' }) };
+    }
+
+    const formattedPhone = formatPhoneNumber(phoneNumber);
+    const timestamp = generateTimestamp();
+    const password = generatePassword(timestamp);
+    const accessToken = await getAccessToken();
+
+    const stkRes = await fetch(`${BASE_URL}/mpesa/stkpush/v1/processrequest`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        BusinessShortCode: process.env.MPESA_SHORTCODE,
+        Password: password,
+        Timestamp: timestamp,
+        TransactionType: 'CustomerPayBillOnline',
+        Amount: Math.round(amount),
+        PartyA: formattedPhone,
+        PartyB: process.env.MPESA_SHORTCODE,
+        PhoneNumber: formattedPhone,
+        CallBackURL: process.env.MPESA_CALLBACK_URL,
+        AccountReference: admissionNumber || studentId,
+        TransactionDesc: `Fee payment Term ${term} ${year}`,
+      }),
+    });
+    const stkData = await stkRes.json();
+
+    if (stkData.ResponseCode !== '0') {
+      return { statusCode: 400, body: JSON.stringify({ error: stkData.ResponseDescription || stkData.errorMessage || 'STK push failed' }) };
+    }
+
+    await db.collection('payments').add({
+      studentId, admissionNumber: admissionNumber || null,
+      amount: Math.round(amount), term, year,
+      method: 'mpesa', status: 'pending',
+      phoneNumber: formattedPhone,
+      merchantRequestId: stkData.MerchantRequestID,
+      checkoutRequestId: stkData.CheckoutRequestID,
+      mpesaReceiptNumber: null, resultDesc: null,
+      createdAt: new Date().toISOString(), completedAt: null,
+    });
+
+    return { statusCode: 200, body: JSON.stringify({ message: 'STK push sent — check your phone', checkoutRequestId: stkData.CheckoutRequestID }) };
+  } catch (err) {
+    console.error('mpesa-stk-push error:', err);
+    return { statusCode: 500, body: JSON.stringify({ error: 'Internal server error' }) };
+  }
+};
+
+===== netlify/functions/mpesa-callback.js =====
+const { db } = require('./utils/firebaseAdmin');
+
+exports.handler = async (event) => {
+  try {
+    const callback = JSON.parse(event.body)?.Body?.stkCallback;
+
+    if (!callback) {
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ ResultCode: 0, ResultDesc: 'Accepted' })
+      };
+    }
+
+    const { CheckoutRequestID, ResultCode, ResultDesc } = callback;
+
+    const snap = await db
+      .collection('payments')
+      .where('checkoutRequestId', '==', CheckoutRequestID)
+      .limit(1)
+      .get();
+
+    if (snap.empty) {
+      console.warn('No matching payment for', CheckoutRequestID);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ ResultCode: 0, ResultDesc: 'Accepted' })
+      };
+    }
+
+    const doc = snap.docs[0];
+    const paymentData = doc.data();
+
+    if (paymentData.status !== 'pending') {
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ ResultCode: 0, ResultDesc: 'Already processed' })
+      };
+    }
+
+    if (ResultCode === 0) {
+      const items = callback.CallbackMetadata?.Item || [];
+      const getValue = (name) => items.find((i) => i.Name === name)?.Value;
+      const paidAmount = getValue('Amount') || paymentData.amount;
+      const receiptNumber = getValue('MpesaReceiptNumber') || null;
+
+      await doc.ref.update({
+        status: 'completed',
+        mpesaReceiptNumber: receiptNumber,
+        amount: paidAmount,
+        completedAt: new Date().toISOString(),
+        resultDesc: ResultDesc,
+      });
+
+      if (paymentData.studentId) {
+        const studentRef = db.collection('students').doc(paymentData.studentId);
+        const studentSnap = await studentRef.get();
+
+        if (studentSnap.exists) {
+          await studentRef.update({
+            lastPaymentDate: new Date().toISOString(),
+            lastPaymentAmount: paidAmount,
+          });
+        }
+      }
+    } else {
+      await doc.ref.update({
+        status: 'failed',
+        resultDesc: ResultDesc,
+        completedAt: new Date().toISOString()
+      });
+    }
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ ResultCode: 0, ResultDesc: 'Accepted' })
+    };
+  } catch (err) {
+    console.error('mpesa-callback error:', err);
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ ResultCode: 0, ResultDesc: 'Accepted' })
+    };
+  }
+};
+
+===== netlify/functions/utils/daraja.js =====
+const MPESA_ENV = process.env.MPESA_ENV || 'sandbox';
+const BASE_URL = MPESA_ENV === 'production'
+  ? 'https://api.safaricom.co.ke'
+  : 'https://sandbox.safaricom.co.ke';
+
+async function getAccessToken() {
+  const auth = Buffer.from(
+    `${process.env.MPESA_CONSUMER_KEY}:${process.env.MPESA_CONSUMER_SECRET}`
+  ).toString('base64');
+
+  const res = await fetch(`${BASE_URL}/oauth/v1/generate?grant_type=client_credentials`, {
+    headers: { Authorization: `Basic ${auth}` },
+  });
+  if (!res.ok) throw new Error(`Daraja auth failed: ${res.status}`);
+  const data = await res.json();
+  return data.access_token;
+}
+
+function generateTimestamp() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return (
+    now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) +
+    pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds())
+  );
+}
+
+function generatePassword(timestamp) {
+  const raw = `${process.env.MPESA_SHORTCODE}${process.env.MPESA_PASSKEY}${timestamp}`;
+  return Buffer.from(raw).toString('base64');
+}
+
+function formatPhoneNumber(phone) {
+  let cleaned = phone.replace(/\D/g, '');
+  if (cleaned.startsWith('254')) return cleaned;
+  if (cleaned.startsWith('0')) return '254' + cleaned.slice(1);
+  if (cleaned.startsWith('7') || cleaned.startsWith('1')) return '254' + cleaned;
+  return cleaned;
+}
+
+module.exports = { BASE_URL, getAccessToken, generateTimestamp, generatePassword, formatPhoneNumber };
+
+===== netlify/functions/utils/firebaseAdmin.js =====
+const admin = require('firebase-admin');
+
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    }),
+  });
+}
+
+module.exports = { admin, db: admin.firestore() };
+
+===== src/services/feeService.js =====
+import {
+  collection,
+  addDoc,
+  updateDoc,
+  doc,
+  getDocs,
+  query,
+  orderBy,
+  where,
+  serverTimestamp,
+  getDoc,
+} from "firebase/firestore";
+import { db } from "@/config/firebase";
+
+const FEES_COLLECTION = "fees";
+const PAYMENTS_COLLECTION = "payments";
+
+export async function getFees({ studentId, term, year, status } = {}) {
+  // Simple query without composite index issues
+  const q = query(collection(db, FEES_COLLECTION), orderBy("createdAt", "desc"));
+  const snap = await getDocs(q);
+  let results = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+  // Filter in JavaScript instead of Firestore
+  if (studentId) results = results.filter((f) => f.studentId === studentId);
+  if (term) results = results.filter((f) => f.term === term);
+  if (year) results = results.filter((f) => f.year === year);
+  if (status) results = results.filter((f) => f.status === status);
+
+  return results;
+}
+
+export async function getStudentFees(studentId) {
+  const q = query(
+    collection(db, "students", studentId, "fees"),
+    orderBy("createdAt", "desc")
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function addFee(data) {
+  const feeData = {
+    ...data,
+    status: data.status || "pending",
+    paidAmount: data.paidAmount || 0,
+    balance: (data.amount || 0) - (data.paidAmount || 0),
+    payments: data.payments || [],
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  const feeRef = await addDoc(
+    collection(db, "students", data.studentId, "fees"),
+    feeData
+  );
+
+  await addDoc(collection(db, FEES_COLLECTION), {
+    ...feeData,
+    feeId: feeRef.id,
+  });
+
+  return feeRef.id;
+}
+
+export async function recordPayment(feeId, studentId, paymentData) {
+  const studentFeeRef = doc(db, "students", studentId, "fees", feeId);
+  const feeSnap = await getDoc(studentFeeRef);
+
+  if (!feeSnap.exists()) {
+    throw new Error("Fee record not found");
+  }
+
+  const feeData = feeSnap.data();
+  const newPaidAmount = (feeData.paidAmount || 0) + paymentData.amount;
+  const newBalance = (feeData.amount || 0) - newPaidAmount;
+  const newStatus = newBalance <= 0 ? "paid" : newPaidAmount > 0 ? "partial" : "pending";
+
+  const payment = {
+    ...paymentData,
+    date: new Date().toISOString(),
+    recordedAt: serverTimestamp(),
+  };
+
+  const payments = [...(feeData.payments || []), payment];
+
+  await updateDoc(studentFeeRef, {
+    paidAmount: newPaidAmount,
+    balance: Math.max(0, newBalance),
+    status: newStatus,
+    payments,
+    updatedAt: serverTimestamp(),
+  });
+
+  await addDoc(collection(db, PAYMENTS_COLLECTION), {
+    feeId,
+    studentId,
+    ...payment,
+    status: "completed",
+    createdAt: serverTimestamp(),
+  });
+
+  return { newBalance, newStatus };
+}
+
+export async function getFeeSummary(year, term) {
+  const q = query(collection(db, FEES_COLLECTION), orderBy("createdAt", "desc"));
+  const snap = await getDocs(q);
+  const fees = snap.docs.map((d) => d.data()).filter((f) => f.year === year && f.term === term);
+
+  let total = 0;
+  let collected = 0;
+  let pending = 0;
+  let overdue = 0;
+  let count = 0;
+
+  fees.forEach((data) => {
+    total += data.amount || 0;
+    collected += data.paidAmount || 0;
+    count++;
+
+    if (data.status === "paid") {
+    } else if (data.status === "overdue") {
+      pending += data.balance || 0;
+      overdue++;
+    } else {
+      pending += data.balance || 0;
+    }
+  });
+
+  return { total, collected, pending, overdue, count, balance: total - collected };
+}
+
+export async function initiateMpesaPayment({ phoneNumber, amount, studentId, feeId, admissionNumber, term, year }) {
+  const response = await fetch('/.netlify/functions/mpesa-stk-push', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      phoneNumber,
+      amount,
+      studentId,
+      feeId,
+      admissionNumber,
+      term,
+      year,
+    }),
+  });
+
+  const data = await response.json();
+  
+  if (!response.ok) {
+    throw new Error(data.error || 'M-Pesa request failed');
+  }
+
+  return data;
+}
+
+===== firestore.rules =====
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && getUserRole() == 'admin';
+    }
+
+    function isFinance() {
+      return isAuthenticated() && getUserRole() == 'finance';
+    }
+
+    function isRegistrar() {
+      return isAuthenticated() && getUserRole() == 'registrar';
+    }
+
+    match /students/{studentId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isRegistrar();
+
+      match /fees/{feeId} {
+        allow read: if isAuthenticated();
+        allow write: if isAdmin() || isFinance();
+      }
+    }
+
+    match /fees/{feeId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isFinance();
+    }
+
+    match /payments/{paymentId} {
+      allow read: if isAdmin() || isFinance();
+      allow write: if isAdmin() || isFinance();
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAdmin();
+    }
+  }
+}
+
+===== src/config/firebase.js =====
+import { initializeApp } from "firebase/app";
+import { getAuth } from "firebase/auth";
+import { getFirestore, enableIndexedDbPersistence } from "firebase/firestore";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBRBO1SmUjDVHB1F3ms7Ip8H0gZf_4XZJI",
+  authDomain: "smartid-yourschool.firebaseapp.com",
+  projectId: "smartid-yourschool",
+  storageBucket: "smartid-yourschool.firebasestorage.app",
+  messagingSenderId: "778564839210",
+  appId: "1:778564839210:web:955488a9e6d67446f56053"
+};
+
+const app = initializeApp(firebaseConfig);
+
+export const auth = getAuth(app);
+export const db = getFirestore(app);
+
+enableIndexedDbPersistence(db).catch((err) => {
+  if (err.code === 'failed-precondition') {
+    console.warn('Firestore persistence failed: multiple tabs open');
+  } else if (err.code === 'unimplemented') {
+    console.warn('Firestore persistence not supported');
+  }
+});
+
+export default app;
